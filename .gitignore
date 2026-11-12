@@ -1,0 +1,17 @@
+target/
+build/
+out/
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+node_modules/
+dist/
+*.log
+deploy/.env
+.env
+.env.local
+backend/config/local.yml
+!.env.example
+!deploy/env/.env.example

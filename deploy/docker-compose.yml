@@ -1,0 +1,109 @@
+# 云枢智学 · 本地与生产同构的数据层
+# 一键启动 MySQL 8.0、Redis 7、MinIO（含图片桶初始化）
+#
+# 在 deploy 目录执行：
+#   copy env\.env.example .env
+#   docker compose up -d
+#
+# 未复制 .env 时使用下方默认值，仅适合本机开发。对外暴露前请改掉全部口令。
+# 容器间互访主机名：mysql、redis、minio；本机访问用 localhost 与映射端口。
+
+name: yszx
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: yszx-mysql
+    restart: unless-stopped
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    environment:
+      TZ: UTC
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-yszx_root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-yszx}
+      MYSQL_USER: ${MYSQL_USER:-yszx}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-yszx_pass}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+00:00
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # 仅首次初始化数据目录时执行：建表与种子数据（库由 MYSQL_DATABASE 创建）
+      - ../scripts/sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  redis:
+    image: redis:7
+    container_name: yszx-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:-yszx_redis}
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:-yszx_redis}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # 官方 minio/minio 已从 Docker Hub 下架，quay.io 也不能匿名拉取。
+  # pgsty/silo 是兼容 MinIO 的服务端，镜像内带 mc，启动参数与官方一致。
+  minio:
+    image: pgsty/silo:latest
+    container_name: yszx-minio
+    restart: unless-stopped
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-yszx}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-yszx_minio_pass}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # 首次启动创建图片桶，并允许匿名下载（头像、Logo 等公开资源）
+  minio-init:
+    image: pgsty/silo:latest
+    container_name: yszx-minio-init
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-yszx}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-yszx_minio_pass}
+      MINIO_BUCKET: ${MINIO_BUCKET:-yszx}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "local/$$MINIO_BUCKET"
+        mc anonymous set download "local/$$MINIO_BUCKET"
+
+volumes:
+  mysql_data:
+  redis_data:
+  minio_data:
