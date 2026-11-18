@@ -15,6 +15,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * OpenAI 兼容对话接口。失败时返回 null，由评分侧降级，不把密钥写进日志。
@@ -33,6 +34,7 @@ public class ModelChatClient {
     private final String endpoint;
     private final String model;
     private final String apiKey;
+    private final AtomicInteger consecutiveFailures = new AtomicInteger();
     private volatile long unavailableUntilMillis;
 
     public ModelChatClient(AppProperties properties, ObjectMapper objectMapper) {
@@ -114,11 +116,14 @@ public class ModelChatClient {
             throw new IllegalStateException("模型返回内容为空");
         }
         unavailableUntilMillis = 0;
+        consecutiveFailures.set(0);
         return content;
     }
 
     private void markUnavailable(Exception ex) {
-        unavailableUntilMillis = System.currentTimeMillis() + COOLDOWN_MILLIS;
+        if (consecutiveFailures.incrementAndGet() >= 2) {
+            unavailableUntilMillis = System.currentTimeMillis() + COOLDOWN_MILLIS;
+        }
         log.warn("大模型调用失败，改为降级评分：{}", ex.getMessage());
     }
 

@@ -21,4 +21,15 @@ public class AsyncConfig {
         executor.initialize();
         return executor;
     }
+
+    @Bean(name = "interviewGradeExecutor")
+    public Executor interviewGradeExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(4);
+        executor.setMaxPoolSize(8);
+        executor.setQueueCapacity(40);
+        executor.setThreadNamePrefix("interview-grade-");
+        executor.initialize();
+        return executor;
+    }
 }

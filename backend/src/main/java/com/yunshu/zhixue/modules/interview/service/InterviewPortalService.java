@@ -160,8 +160,15 @@ public class InterviewPortalService {
         }
     }
 
+    public long currentStudentId() {
+        return requireStudentId();
+    }
+
     public PreparedGrade prepareAnswer(String sessionId, AnswerRequest request) {
-        long studentId = requireStudentId();
+        return prepareAnswer(requireStudentId(), sessionId, request);
+    }
+
+    public PreparedGrade prepareAnswer(long studentId, String sessionId, AnswerRequest request) {
         requireSessionId(sessionId);
         if (request == null || request.order() == null) {
             throw new BizException(ErrorCode.VALIDATION_FAILED, "请指定题目");
@@ -202,7 +209,7 @@ public class InterviewPortalService {
             return cached;
         }
         String lockKey = lockKey(sessionId);
-        if (!Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(lockKey, "1", Duration.ofSeconds(45)))) {
+        if (!Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(lockKey, "1", Duration.ofSeconds(120)))) {
             throw new BizException(ErrorCode.CONFLICT, "报告正在生成，请稍候");
         }
         try {
@@ -211,7 +218,10 @@ public class InterviewPortalService {
                 redis.delete(tempKey(sessionId));
                 return again;
             }
-            FinishResult result = transaction.execute(status -> persist(studentId, sessionId, request));
+            InterviewSessionState state = loadSession(sessionId, studentId);
+            applyFinishAnswers(state, request);
+            saveSession(sessionId, state);
+            FinishResult result = transaction.execute(status -> persist(studentId, state));
             if (result == null) {
                 throw new BizException(ErrorCode.INTERNAL_ERROR, "面试报告生成失败");
             }
@@ -280,10 +290,7 @@ public class InterviewPortalService {
                 row.getTotalDuration() == null ? 0 : row.getTotalDuration());
     }
 
-    private FinishResult persist(long studentId, String sessionId, FinishRequest request) {
-        InterviewSessionState state = loadSession(sessionId, studentId);
-        applyFinishAnswers(state, request);
-        saveSession(sessionId, state);
+    private FinishResult persist(long studentId, InterviewSessionState state) {
         List<Item> questions = state.getQuestions();
         BigDecimal overall = average(questions);
         int duration = questions.stream().mapToInt(item -> item.getDurationSeconds() == null ? 0 : item.getDurationSeconds()).sum();
@@ -484,7 +491,7 @@ public class InterviewPortalService {
 
     private <T> T withLockedState(long studentId, String sessionId, java.util.function.Function<InterviewSessionState, T> action) {
         String lockKey = lockKey(sessionId);
-        if (!Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(lockKey, "1", Duration.ofSeconds(45)))) {
+        if (!Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(lockKey, "1", Duration.ofSeconds(120)))) {
             throw new BizException(ErrorCode.CONFLICT, "正在处理上一题，请稍候");
         }
         try {

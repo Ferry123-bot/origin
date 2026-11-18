@@ -1,6 +1,8 @@
 package com.yunshu.zhixue.modules.interview.controller.portal;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yunshu.zhixue.common.exception.BizException;
+import com.yunshu.zhixue.common.exception.ErrorCode;
 import com.yunshu.zhixue.common.response.ApiResponse;
 import com.yunshu.zhixue.common.response.PageResult;
 import com.yunshu.zhixue.modules.interview.dto.InterviewPortalPayloads.AnswerRequest;
@@ -17,6 +19,7 @@ import com.yunshu.zhixue.modules.interview.service.InterviewPortalService;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -30,20 +33,28 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 
 @Validated
 @RestController
 @RequestMapping("/api/portal/v1/interview")
 public class PortalInterviewController {
 
+    private static final long GRADE_STREAM_TIMEOUT_MILLIS = 60_000L;
+    private static final int TOKEN_CHUNK_CHARS = 8;
+
     private final InterviewPortalService interviewPortalService;
     private final ObjectMapper objectMapper;
+    private final Executor interviewGradeExecutor;
 
-    public PortalInterviewController(InterviewPortalService interviewPortalService, ObjectMapper objectMapper) {
+    public PortalInterviewController(InterviewPortalService interviewPortalService, ObjectMapper objectMapper,
+                                     @Qualifier("interviewGradeExecutor") Executor interviewGradeExecutor) {
         this.interviewPortalService = interviewPortalService;
         this.objectMapper = objectMapper;
+        this.interviewGradeExecutor = interviewGradeExecutor;
     }
 
     @GetMapping("/config")
@@ -59,12 +70,17 @@ public class PortalInterviewController {
 
     @PostMapping(value = "/sessions/{id}/answers", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter answer(@PathVariable String id, @RequestBody AnswerRequest request, HttpServletResponse response) {
-        PreparedGrade prepared = interviewPortalService.prepareAnswer(id, request);
+        long studentId = interviewPortalService.currentStudentId();
         response.setHeader("Cache-Control", "no-cache");
         response.setHeader("X-Accel-Buffering", "no");
         response.setContentType("text/event-stream;charset=UTF-8");
-        SseEmitter emitter = new SseEmitter(30_000L);
-        CompletableFuture.runAsync(() -> streamGrade(emitter, prepared));
+        SseEmitter emitter = new SseEmitter(GRADE_STREAM_TIMEOUT_MILLIS);
+        emitter.onTimeout(emitter::complete);
+        try {
+            interviewGradeExecutor.execute(() -> streamGrade(emitter, studentId, id, request));
+        } catch (RejectedExecutionException ex) {
+            fail(emitter, ErrorCode.TOO_MANY_REQUESTS.code(), ErrorCode.TOO_MANY_REQUESTS.defaultMessage());
+        }
         return emitter;
     }
 
@@ -96,36 +112,36 @@ public class PortalInterviewController {
         return ApiResponse.ok(interviewPortalService.records(page, pageSize));
     }
 
-    private void streamGrade(SseEmitter emitter, PreparedGrade prepared) {
+    private void streamGrade(SseEmitter emitter, long studentId, String sessionId, AnswerRequest request) {
         try {
             send(emitter, "status", Map.of("phase", "analyzing"));
-            Thread.sleep(280);
+            PreparedGrade prepared = interviewPortalService.prepareAnswer(studentId, sessionId, request);
             send(emitter, "status", Map.of("phase", "grading"));
             String feedback = prepared.feedback() == null ? "" : prepared.feedback();
-            for (int i = 0; i < feedback.length(); i += 8) {
-                send(emitter, "token", Map.of("delta", feedback.substring(i, Math.min(feedback.length(), i + 8))));
-                Thread.sleep(30);
+            for (int i = 0; i < feedback.length(); i += TOKEN_CHUNK_CHARS) {
+                send(emitter, "token", Map.of("delta", feedback.substring(i, Math.min(feedback.length(), i + TOKEN_CHUNK_CHARS))));
             }
-            send(emitter, "status", Map.of("phase", "thinking"));
-            Thread.sleep(160);
             send(emitter, "grade", Map.of(
                     "order", prepared.order(),
                     "score", prepared.score(),
                     "feedback", feedback,
                     "degraded", prepared.degraded(),
-                    "referencePoints", prepared.referencePoints()));
+                    "referencePoints", prepared.referencePoints() == null ? List.of() : prepared.referencePoints()));
             emitter.complete();
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            emitter.complete();
+        } catch (BizException ex) {
+            fail(emitter, ex.getErrorCode().code(), ex.getMessage());
         } catch (Exception ex) {
-            try {
-                send(emitter, "error", Map.of("code", 20010, "message", "评分失败"));
-            } catch (IOException ignored) {
-                // 客户端已断开时不再回写。
-            }
-            emitter.complete();
+            fail(emitter, ErrorCode.AI_UNAVAILABLE.code(), "评分失败");
         }
+    }
+
+    private void fail(SseEmitter emitter, int code, String message) {
+        try {
+            send(emitter, "error", Map.of("code", code, "message", message == null ? "评分失败" : message));
+        } catch (IOException ignored) {
+            // 客户端已断开时不再回写。
+        }
+        emitter.complete();
     }
 
     private void send(SseEmitter emitter, String name, Object payload) throws IOException {

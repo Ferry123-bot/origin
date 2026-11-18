@@ -174,13 +174,19 @@ async function send(raw: string) {
   busy.value = true
   store.persist(current)
   try {
+    let preview = ''
     const grade = await gradeInterviewAnswer(current.sessionId, {
       order: question.order,
       studentAnswer: text,
       durationSeconds: duration,
     }, (phase) => {
+      if (preview) return
       const found = current.messages.find((item) => item.id === status.id)
       if (found) found.text = PHASE_TEXT[phase] || found.text
+    }, (delta) => {
+      preview += delta
+      const found = current.messages.find((item) => item.id === status.id)
+      if (found) found.text = preview
     })
     question.score = grade.score
     question.feedback = grade.feedback

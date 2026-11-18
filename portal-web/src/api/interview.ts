@@ -177,6 +177,7 @@ export async function gradeInterviewAnswer(
   sessionId: string,
   body: { order: number; studentAnswer: string; durationSeconds: number },
   onPhase?: (phase: string) => void,
+  onToken?: (delta: string) => void,
 ): Promise<GradeEvent> {
   let response = await gradeFetch(sessionId, body)
   if (response.status === 401) {
@@ -205,9 +206,10 @@ export async function gradeInterviewAnswer(
       const name = frame.match(/^event:\s*(.*)$/m)?.[1]?.trim()
       const dataLine = frame.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n')
       if (!dataLine) continue
-      const data = JSON.parse(dataLine) as GradeEvent & { phase?: string; code?: number; message?: string }
+      const data = JSON.parse(dataLine) as GradeEvent & { phase?: string; delta?: string; code?: number; message?: string }
       if (name === 'error') throw data
       if (name === 'status' && data.phase) onPhase?.(data.phase)
+      if (name === 'token' && data.delta) onToken?.(data.delta)
       if (name === 'grade') grade = data
     }
   }
