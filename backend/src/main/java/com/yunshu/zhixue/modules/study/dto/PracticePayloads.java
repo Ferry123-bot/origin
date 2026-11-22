@@ -40,7 +40,7 @@ public final class PracticePayloads {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record PracticeResultItem(long questionId, @JsonProperty("isCorrect") boolean correct, int score,
                                      String answer, String analysis, String aiFeedback, Boolean degraded,
-                                     List<String> referencePoints) {
+                                     String degradeReason, List<String> referencePoints) {
     }
 
     public record PracticeSubmitResult(List<PracticeResultItem> results) {
@@ -50,7 +50,7 @@ public final class PracticePayloads {
     }
 
     public record CachedGrade(long questionId, String answer, int score, String feedback, boolean degraded,
-                              List<String> referencePoints) {
+                              String degradeReason, List<String> referencePoints) {
     }
 
     public record Paper(long studentId, int mode, List<PaperQuestion> questions, List<CachedGrade> grades) {
@@ -59,6 +59,7 @@ public final class PracticePayloads {
     public record PreparedGrade(int order, GradeView grade) {
     }
 
-    public record GradeView(int score, String feedback, boolean degraded, List<String> referencePoints) {
+    public record GradeView(int score, String feedback, boolean degraded, String degradeReason,
+                            List<String> referencePoints) {
     }
 }

@@ -34,13 +34,17 @@ public class AnswerGrader {
     public GradeResult grade(String question, String reference, String userAnswer) {
         String answer = userAnswer == null ? "" : userAnswer.trim();
         if (answer.isEmpty()) {
-            return new GradeResult(0, "未作答", List.of(), true);
+            return new GradeResult(0, "未作答", List.of(), true, "未作答");
         }
         GradeResult model = gradeByModel(question, reference, answer);
         if (model != null) {
             return model;
         }
-        return gradeByKeywords(reference, answer);
+        GradeResult fallback = gradeByKeywords(reference, answer);
+        String reason = modelChatClient.enabled()
+                ? blankTo(modelChatClient.lastFailureReason(), "大模型返回无法解析")
+                : "未配置大模型";
+        return new GradeResult(fallback.score(), fallback.feedback(), fallback.referencePoints(), true, reason);
     }
 
     private GradeResult gradeByModel(String question, String reference, String answer) {
@@ -51,7 +55,16 @@ public class AnswerGrader {
         if (raw == null || raw.isBlank()) {
             return null;
         }
-        return parseModel(raw);
+        GradeResult parsed = parseModel(raw);
+        if (parsed == null) {
+            modelChatClient.noteFailure("大模型返回无法解析");
+            return null;
+        }
+        return parsed;
+    }
+
+    private String blankTo(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 
     private String prompt(String question, String reference, String answer) {
@@ -89,7 +102,7 @@ public class AnswerGrader {
                     }
                 }
             }
-            return new GradeResult(score, feedback, points, false);
+            return new GradeResult(score, feedback, points, false, null);
         } catch (Exception ex) {
             return null;
         }
@@ -114,12 +127,12 @@ public class AnswerGrader {
         String normRef = normalize(ref);
         if (!normRef.isEmpty() && normAnswer.contains(normRef)) {
             return new GradeResult(10, "回答覆盖了参考答案的主要内容。",
-                    pointsOf(ref).stream().map(Point::label).toList(), true);
+                    pointsOf(ref).stream().map(Point::label).toList(), true, null);
         }
         List<Point> points = pointsOf(ref);
         if (points.isEmpty()) {
             int score = normAnswer.length() >= 30 ? 6 : 3;
-            return new GradeResult(score, "参考答案不足，已按作答完整度估算。", List.of("作答完整"), true);
+            return new GradeResult(score, "参考答案不足，已按作答完整度估算。", List.of("作答完整"), true, null);
         }
         List<String> hits = new ArrayList<>();
         for (Point point : points) {
@@ -140,7 +153,7 @@ public class AnswerGrader {
         List<String> shown = hits.isEmpty()
                 ? points.stream().limit(3).map(Point::label).toList()
                 : hits;
-        return new GradeResult(score, feedback, shown, true);
+        return new GradeResult(score, feedback, shown, true, null);
     }
 
     private List<Point> pointsOf(String reference) {

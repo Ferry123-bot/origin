@@ -24,6 +24,7 @@ interface GradeCard {
   reference: string
   analysis: string
   degraded: boolean
+  degradeReason?: string | null
 }
 
 interface Session {
@@ -80,17 +81,49 @@ let shownAt = Date.now()
 const current = computed(() => questions.value[index.value] ?? null)
 const total = computed(() => questions.value.length)
 const progress = computed(() => (total.value ? ((index.value + 1) / total.value) * 100 : 0))
-const clock = computed(() => {
-  const hours = Math.floor(elapsed.value / 3600).toString().padStart(2, '0')
-  const minutes = Math.floor((elapsed.value % 3600) / 60).toString().padStart(2, '0')
-  const seconds = (elapsed.value % 60).toString().padStart(2, '0')
+function clockOf(totalSeconds: number) {
+  const hours = Math.floor(totalSeconds / 3600).toString().padStart(2, '0')
+  const minutes = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0')
+  const seconds = (totalSeconds % 60).toString().padStart(2, '0')
   return `${hours}:${minutes}:${seconds}`
-})
+}
+
+const clock = computed(() => clockOf(elapsed.value))
 const isShort = computed(() => current.value?.type === 4)
 const currentGrade = computed(() => grades.value[index.value])
 const selectedKeys = computed(() => splitKeys(answers.value[index.value]))
 const correctKeys = computed(() => splitKeys(corrects.value[index.value]))
-const unfinishedCount = computed(() => questions.value.filter((item, i) => item.type !== 4 && !answers.value[i]).length)
+const unfinishedCount = computed(() => questions.value.filter((item, i) => {
+  if (item.type === 4) return !persisted.value[i]
+  return !answers.value[i]
+}).length)
+
+interface ReportItem {
+  order: number
+  type: number
+  content: string
+  options: PracticeQuestion['options']
+  answer: string | null
+  correctAnswer: string | null
+  status: 'correct' | 'wrong' | null
+  grade: GradeCard | null
+  analysis: string | null
+}
+
+interface PracticeReport {
+  title: string
+  elapsed: number
+  total: number
+  correct: number
+  wrong: number
+  unanswered: number
+  accuracy: number
+  items: ReportItem[]
+}
+
+const reporting = ref(false)
+const finishing = ref(false)
+const report = ref<PracticeReport | null>(null)
 
 function positive(value: unknown) {
   const number = Number(value)
@@ -354,6 +387,7 @@ function applyResult(position: number, result: PracticeResult | undefined) {
       reference: result.answer || '',
       analysis: result.analysis || '',
       degraded: !!result.degraded,
+      degradeReason: result.degradeReason || '',
     }
     return
   }
@@ -496,11 +530,6 @@ async function showAnalysis() {
 
 function go(next: number) {
   if (next < 0 || next >= questions.value.length || next === index.value || busy.value) return
-  const question = current.value
-  if (question?.type === 4 && !persisted.value[index.value] && next > index.value) {
-    ElMessage.warning('请先提交答案')
-    return
-  }
   bumpDuration()
   index.value = next
   shownAt = Date.now()
@@ -516,24 +545,45 @@ function nextQuestion() {
 }
 
 function requestFinish() {
-  if (!started.value || busy.value) return
-  const pendingShort = questions.value.findIndex((item, i) => item.type === 4 && !persisted.value[i])
-  if (pendingShort >= 0) {
-    ElMessage.warning('还有简答题未作答，请先完成')
-    bumpDuration()
-    index.value = pendingShort
-    shownAt = Date.now()
-    save()
-    return
-  }
+  if ((!started.value && !reporting.value) || busy.value) return
+  if (reporting.value) return
   confirmText.value = unfinishedCount.value > 0
-    ? `还有 ${unfinishedCount.value} 道题未完成，确定要结束练习吗？`
+    ? `还有 ${unfinishedCount.value} 道题未完成，确定要强制结束练习吗？`
     : '确定要结束练习吗？'
   confirming.value = true
 }
 
+function buildReport(): PracticeReport {
+  const items = questions.value.map((item, i) => ({
+    order: i + 1,
+    type: item.type,
+    content: item.content,
+    options: item.options || [],
+    answer: answers.value[i],
+    correctAnswer: corrects.value[i] || item.answer || null,
+    status: statuses.value[i],
+    grade: grades.value[i],
+    analysis: analyses.value[i],
+  }))
+  const correct = items.filter((item) => item.status === 'correct').length
+  const wrong = items.filter((item) => item.status === 'wrong').length
+  const unanswered = items.length - correct - wrong
+  const judged = correct + wrong
+  return {
+    title: title.value,
+    elapsed: elapsed.value,
+    total: items.length,
+    correct,
+    wrong,
+    unanswered,
+    accuracy: judged ? Math.round((correct / judged) * 100) : 0,
+    items,
+  }
+}
+
 async function confirmFinish() {
   confirming.value = false
+  finishing.value = true
   busy.value = true
   try {
     bumpDuration()
@@ -551,11 +601,28 @@ async function confirmFinish() {
     ElMessage.error(messageOf(error, '部分作答未能保存'))
   } finally {
     busy.value = false
+    finishing.value = false
     stopTimer()
-    clearSession()
+    report.value = buildReport()
+    reporting.value = true
     started.value = false
-    backToBank()
+    clearSession()
   }
+}
+
+function leaveReport() {
+  reporting.value = false
+  report.value = null
+  backToBank()
+}
+
+function reportOptionClass(item: ReportItem, key: string) {
+  const chosen = splitKeys(item.answer).includes(key)
+  const right = splitKeys(item.correctAnswer).includes(key)
+  if (item.status === 'wrong') return { correct: right, wrong: chosen && !right }
+  if (item.status === 'correct') return { correct: right }
+  if (!item.answer) return { correct: right }
+  return { selected: chosen, correct: right }
 }
 
 function optionClass(key: string) {
@@ -661,7 +728,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-loading="starting" class="practice" :class="{ idle: !started }">
+  <div v-loading="starting || finishing" class="practice" :class="{ idle: !started && !reporting }">
     <aside v-if="started" class="sidebar">
       <button class="back" type="button" @click="requestFinish">返回题库</button>
       <h2>{{ title }}</h2>
@@ -682,7 +749,61 @@ onUnmounted(() => {
     </aside>
 
     <section class="board">
-      <div v-if="!started" class="idle-panel">
+      <div v-if="reporting && report" class="report-panel">
+        <article class="report-card">
+          <header>
+            <h2>做题报告</h2>
+            <p>{{ report.title }} · 用时 {{ clockOf(report.elapsed) }}</p>
+          </header>
+          <div class="report-stats">
+            <div><strong>{{ report.total }}</strong><span>总题数</span></div>
+            <div><strong class="ok">{{ report.correct }}</strong><span>答对</span></div>
+            <div><strong class="bad">{{ report.wrong }}</strong><span>答错</span></div>
+            <div><strong>{{ report.unanswered }}</strong><span>未作答</span></div>
+            <div><strong>{{ report.accuracy }}%</strong><span>正确率</span></div>
+          </div>
+        </article>
+
+        <article v-for="item in report.items" :key="item.order" class="report-card review">
+          <header>
+            <span class="type">{{ TYPE_LABEL[item.type] || '题目' }}</span>
+            <strong>第 {{ item.order }} 题</strong>
+            <em v-if="item.status === 'correct'" class="ok">回答正确</em>
+            <em v-else-if="item.status === 'wrong'" class="bad">回答错误</em>
+            <em v-else class="muted">未作答</em>
+          </header>
+          <p class="stem">{{ item.content }}</p>
+
+          <div v-if="item.type !== 4" class="options">
+            <div
+              v-for="option in item.options"
+              :key="option.key"
+              class="option"
+              :class="reportOptionClass(item, option.key)"
+            >
+              <span class="key">{{ option.key }}</span>
+              <span class="text">{{ option.text }}</span>
+            </div>
+          </div>
+          <div v-else class="short-review">
+            <p><b>你的回答</b>{{ item.answer || '未作答' }}</p>
+            <p v-if="item.grade"><b>评分</b>{{ item.grade.score }}/10 · {{ item.grade.feedback }}</p>
+            <p v-if="item.correctAnswer"><b>参考答案</b>{{ item.correctAnswer }}</p>
+          </div>
+          <p v-if="item.type !== 4" class="answer-line">
+            正确答案：{{ displayAnswer(item.correctAnswer) }}
+            <span class="sep">｜</span>
+            你的答案：{{ displayAnswer(item.answer) }}
+          </p>
+          <p v-if="item.analysis" class="pre">{{ item.analysis }}</p>
+        </article>
+
+        <div class="report-actions">
+          <button type="button" class="primary" @click="leaveReport">返回题库</button>
+        </div>
+      </div>
+
+      <div v-else-if="!started" class="idle-panel">
         <h2>刷题练习</h2>
         <p v-if="emptyMessage">{{ emptyMessage }}</p>
         <p v-else>选择练习模式后开始答题。</p>
@@ -704,7 +825,7 @@ onUnmounted(() => {
               @click="choose(option.key)"
             >
               <span class="key">{{ option.key }}</span>
-              <span>{{ option.text }}</span>
+              <span class="text">{{ option.text }}</span>
             </button>
           </div>
 
@@ -740,7 +861,9 @@ onUnmounted(() => {
                 <h3>参考答案</h3>
                 <p class="pre">{{ currentGrade.reference || '暂无参考答案' }}</p>
               </section>
-              <p v-if="currentGrade.degraded" class="degraded">大模型本次未能评分，已按关键词规则评分。</p>
+              <p v-if="currentGrade.degraded" class="degraded">
+                {{ currentGrade.degradeReason || '大模型本次未能评分' }}，已按关键词规则评分。
+              </p>
             </div>
           </div>
 
@@ -871,15 +994,50 @@ onUnmounted(() => {
 .option {
   display: flex; gap: 12px; align-items: flex-start; text-align: left; padding: 14px 16px;
   border: 1px solid #dcdfe6; border-radius: 8px; background: #fff; font: inherit; color: inherit;
+  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
 }
 .option .key {
-  flex: none; min-width: 28px; height: 28px; padding: 0 6px; border-radius: 99px; display: inline-flex;
-  align-items: center; justify-content: center; background: #f5f7fa; color: #409eff; font-weight: 700;
+  flex: none; width: 26px; height: 26px; border-radius: 50%; display: inline-flex;
+  align-items: center; justify-content: center; background: #f5f7fa; color: #909399; font-size: 13px; font-weight: 600;
 }
-.option.selected { border-color: #409eff; background: rgba(64, 158, 255, 0.06); }
-.option.correct { border-color: #67c23a; background: rgba(103, 194, 58, 0.08); }
-.option.wrong { border-color: #f56c6c; background: rgba(245, 108, 108, 0.08); }
+.option .text { flex: 1; padding-top: 2px; font-size: 15px; line-height: 1.6; color: #303133; }
+.option.selected {
+  border-color: #409eff; background: rgba(64, 158, 255, 0.08); box-shadow: 0 0 0 1px rgba(64, 158, 255, 0.4);
+}
+.option.selected .key { background: #409eff; color: #fff; }
+.option.selected .text { font-weight: 500; color: #409eff; }
+.option.correct { border-color: #67c23a; background: rgba(103, 194, 58, 0.08); cursor: default; }
+.option.correct .key { background: #67c23a; color: #fff; }
+.option.correct .text { font-weight: 500; color: #67c23a; }
+.option.correct::after,
+.option.wrong::after {
+  content: '✓'; flex: none; font-size: 16px; font-weight: 700; line-height: 1.6; color: #67c23a;
+}
+.option.wrong { border-color: #f56c6c; background: rgba(245, 108, 108, 0.08); cursor: default; }
+.option.wrong .key { background: #f56c6c; color: #fff; }
+.option.wrong .text { font-weight: 500; color: #f56c6c; }
+.option.wrong::after { content: '✕'; color: #f56c6c; }
 .option.locked { cursor: default; }
+.report-panel { width: min(860px, calc(100% - 48px)); margin: 28px auto; display: flex; flex-direction: column; gap: 16px; }
+.report-card { background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04); padding: 24px; }
+.report-card header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.report-card header h2 { margin: 0; font-size: 22px; }
+.report-card header p { margin: 6px 0 0; width: 100%; color: #909399; }
+.report-card.review header strong { font-size: 16px; }
+.report-card.review header em { margin-left: auto; font-style: normal; font-size: 13px; }
+.report-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
+.report-stats div { padding: 16px 12px; border-radius: 10px; background: #f5f7fa; text-align: center; }
+.report-stats strong { display: block; font-size: 24px; line-height: 1.2; }
+.report-stats span { color: #909399; font-size: 13px; }
+.report-card .ok, .report-stats .ok { color: #67c23a; }
+.report-card .bad, .report-stats .bad { color: #f56c6c; }
+.report-card .muted { color: #909399; }
+.short-review { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+.short-review p, .answer-line { margin: 0; line-height: 1.8; color: #606266; }
+.short-review b { display: block; }
+.answer-line { margin-top: 14px; }
+.answer-line .sep { margin: 0 8px; color: #dcdfe6; }
+.report-actions { display: flex; justify-content: flex-end; }
 .short { display: flex; flex-direction: column; gap: 12px; margin-top: 20px; }
 textarea {
   min-height: 160px; padding: 16px; border: 2px solid #ebeef5; border-radius: 8px; font: inherit; line-height: 1.8; resize: vertical;
@@ -949,5 +1107,6 @@ kbd { display: inline-block; min-width: 1.6em; padding: 0 6px; border: 1px solid
   .practice { height: auto; min-height: calc(100vh - 64px); flex-direction: column; }
   .sidebar { width: auto; border-right: none; border-bottom: 1px solid #ebeef5; }
   .modes { flex-direction: column; }
+  .report-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 </style>

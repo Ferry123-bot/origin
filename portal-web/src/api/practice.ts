@@ -43,6 +43,7 @@ export interface PracticeResult {
   analysis?: string | null
   aiFeedback?: string | null
   degraded?: boolean | null
+  degradeReason?: string | null
   referencePoints?: string[] | null
 }
 
@@ -51,6 +52,7 @@ export interface GradeEvent {
   score: number
   feedback: string
   degraded: boolean
+  degradeReason?: string | null
   referencePoints: string[]
 }
 

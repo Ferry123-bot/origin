@@ -161,7 +161,7 @@ public class PracticePortalService {
         GradeResult grade = gradeShortAnswer(question, answer, paper);
         savePaper(practiceId, remember(paper, question.id(), answer, grade));
         return new PreparedGrade(index + 1, new GradeView(grade.score(), grade.feedback(), grade.degraded(),
-                grade.referencePoints()));
+                grade.degradeReason(), grade.referencePoints()));
     }
 
     @Transactional
@@ -222,12 +222,12 @@ public class PracticePortalService {
             boolean correct = grade.score() >= 6;
             PracticeResultItem result = new PracticeResultItem(question.id(), correct, grade.score(),
                     question.answer(), blankToNull(question.analysis()), grade.feedback(), grade.degraded(),
-                    grade.referencePoints().isEmpty() ? null : grade.referencePoints());
+                    grade.degradeReason(), grade.referencePoints().isEmpty() ? null : grade.referencePoints());
             return new Judged(question.id(), correct, userAnswer, duration, result, grade);
         }
         boolean correct = matches(question.type(), question.answer(), userAnswer);
         PracticeResultItem result = new PracticeResultItem(question.id(), correct, correct ? 10 : 0,
-                question.answer(), blankToNull(question.analysis()), null, null, null);
+                question.answer(), blankToNull(question.analysis()), null, null, null, null);
         return new Judged(question.id(), correct, userAnswer, duration, result, null);
     }
 
@@ -236,7 +236,8 @@ public class PracticePortalService {
             for (CachedGrade cached : paper.grades()) {
                 if (cached.questionId() == question.id() && answer.equals(cached.answer())) {
                     List<String> points = cached.referencePoints() == null ? List.of() : cached.referencePoints();
-                    return new GradeResult(cached.score(), cached.feedback(), points, cached.degraded());
+                    return new GradeResult(cached.score(), cached.feedback(), points, cached.degraded(),
+                            cached.degradeReason());
                 }
             }
         }
@@ -253,7 +254,7 @@ public class PracticePortalService {
             }
         }
         grades.add(new CachedGrade(questionId, answer, grade.score(), grade.feedback(), grade.degraded(),
-                grade.referencePoints()));
+                grade.degradeReason(), grade.referencePoints()));
         return new Paper(paper.studentId(), paper.mode(), paper.questions(), grades);
     }
 

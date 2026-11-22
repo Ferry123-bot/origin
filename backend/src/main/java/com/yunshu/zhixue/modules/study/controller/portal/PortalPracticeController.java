@@ -65,12 +65,16 @@ public class PortalPracticeController {
             for (int i = 0; i < feedback.length(); i += 8) {
                 send(emitter, "token", Map.of("delta", feedback.substring(i, Math.min(feedback.length(), i + 8))));
             }
-            send(emitter, "grade", Map.of(
-                    "order", prepared.order(),
-                    "score", prepared.grade().score(),
-                    "feedback", feedback,
-                    "degraded", prepared.grade().degraded(),
-                    "referencePoints", prepared.grade().referencePoints()));
+            Map<String, Object> gradePayload = new java.util.LinkedHashMap<>();
+            gradePayload.put("order", prepared.order());
+            gradePayload.put("score", prepared.grade().score());
+            gradePayload.put("feedback", feedback);
+            gradePayload.put("degraded", prepared.grade().degraded());
+            gradePayload.put("referencePoints", prepared.grade().referencePoints());
+            if (prepared.grade().degradeReason() != null && !prepared.grade().degradeReason().isBlank()) {
+                gradePayload.put("degradeReason", prepared.grade().degradeReason());
+            }
+            send(emitter, "grade", gradePayload);
             emitter.complete();
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
